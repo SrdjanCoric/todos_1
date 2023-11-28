@@ -1,0 +1,25 @@
+{% extends 'layout.html' %}
+
+{% block content %}
+  <ul id="lists">
+    {% for lst in sort_items(lists, is_list_completed) %}
+      {% if is_list_completed(lst) %}
+        <li class="complete">
+      {% else %}
+        <li>
+      {% endif %}
+          <a href="/lists/{{lst['id']}}">
+            <h2>{{lst['name']}}</h2>
+            <p>
+              {{todos_remaining_count(lst)}} / {{todos_count(lst)}}
+            </p>
+          </a>
+      </li>
+    {% endfor %}
+  </ul>
+
+{% endblock %}
+
+{% block header_links %}
+  <a class="add" href="/lists/new">New List</a>
+{% endblock %}
