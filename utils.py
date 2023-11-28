@@ -37,13 +37,8 @@ def sort_items(items, is_completed):
 
     return incomplete_items + complete_items
 
-def find_todo_by_id(todos, id):
+def find_todo_by_id(todos, todo_id):
     for todo in todos:
-        if todo['id'] == id:
+        if todo['id'] == todo_id:
             return todo
     return None
-
-def find_list_by_id(lists, id):
-    return next((lst for lst in lists if lst['id'] == id), None)
-
-

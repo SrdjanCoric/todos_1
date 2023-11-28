@@ -1,12 +1,16 @@
+import secrets
+
 from flask import (
     Flask, session, render_template,
-    url_for, redirect, request, flash, jsonify
+    url_for, redirect, request, flash, jsonify, g
 )
+
+from session_persistence import SessionPersistence
 
 from utils import (
     error_for_list_name, error_for_todo, list_class, is_list_completed,
     todos_remaining_count, todos_count, sort_items, is_todo_completed,
-    find_todo_by_id, find_list_by_id
+    find_todo_by_id
 )
 
 from uuid import uuid4
@@ -15,7 +19,7 @@ from exceptions import ListNotFoundError
 
 app = Flask(__name__)
 
-app.secret_key = 'my secret'
+app.secret_key = secrets.token_hex(32)
 
 @app.context_processor
 def list_utilities_processor():
@@ -31,9 +35,8 @@ def handle_list_not_found_error(error):
     return redirect(url_for('show_lists'))
 
 @app.before_request
-def initialize_session():
-    if 'lists' not in session:
-        session['lists'] = []
+def load_storage():
+    g.storage = SessionPersistence(session)
 
 @app.route("/")
 def index():
@@ -41,7 +44,7 @@ def index():
 
 @app.route("/lists", methods=["GET"])
 def show_lists():
-    lists = session['lists']
+    lists = g.storage.all_lists()
     return render_template('lists.html', lists=lists)
 
 @app.route("/lists", methods=["POST"])
@@ -61,68 +64,59 @@ def create_list():
 def add_list():
     return render_template('new_list.html')
 
-@app.route("/lists/<id>", methods=["GET"])
-def show_list(id):
-    lst = find_list_by_id(session['lists'], id)
+@app.route("/lists/<list_id>", methods=["GET"])
+def show_list(list_id):
+    lst = g.storage.find_list(list_id)
     if not lst:
-        raise ListNotFoundError(f"The specified list with id {id} was not found.")
-    return render_template('list.html', list=lst, list_id=id)
+        raise ListNotFoundError(f"The specified list with id {list_id} was not found.")
+    return render_template('list.html', list=lst, list_id=list_id)
 
-@app.route("/lists/<id>", methods=["POST"])
-def update_list(id):
+@app.route("/lists/<list_id>", methods=["POST"])
+def update_list(list_id):
     name = request.form["list_name"].strip()
-    lst = find_list_by_id(session['lists'], id)
-    if not lst:
-        raise ListNotFoundError(f"The specified list with id {id} was not found.")
-    error = error_for_list_name(name, session['lists'])
+    lst = g.storage.find_list(list_id)
+    print(lst)
+    error = error_for_list_name(name, g.storage.all_lists())
+    print(error)
     if error:
         flash(error, "error")
         return render_template('edit_list.html', list=lst)
-    lst['name'] = name
+    print("here")
+    g.storage.update_list_name(list_id, name)
     flash("The list has been updated.", "success")
-    session.modified = True
     return redirect(url_for('show_lists'))
 
-@app.route("/lists/<id>/edit")
-def edit_list(id):
-    lst = find_list_by_id(session['lists'], id)
+@app.route("/lists/<list_id>/edit")
+def edit_list(list_id):
+    lst = g.storage.find_list(list_id)
     if not lst:
-        raise ListNotFoundError(f"The specified list with id {id} was not found.")
+        raise ListNotFoundError(f"The specified list with id {list_id} was not found.")
     return render_template('edit_list.html', list=lst)
 
-@app.route("/lists/<id>/delete", methods=["POST"])
-def delete_list(id):
-    lists = session['lists']
-    for idx in range(len(lists)):
-        if lists[idx]['id'] == id:
-            del lists[idx]
-            break
+@app.route("/lists/<list_id>/delete", methods=["POST"])
+def delete_list(list_id):
+    g.storage.delete_list(list_id)
     flash("The list has been deleted.", "success")
-    session.modified = True
     return redirect(url_for('show_lists'))
 
 @app.route("/lists/<list_id>/todos", methods=["POST"])
 def create_todo(list_id):
     todo_name = request.form["todo"].strip()
-    lst = find_list_by_id(session['lists'], list_id)
-    if not lst:
-        raise ListNotFoundError(f"The specified list with id {list_id} was not found.")
+    lst = g.storage.find_list(list_id)
 
     error = error_for_todo(todo_name)
     if error:
         flash(error, "error")
         return render_template('list.html', list=lst, list_id=list_id)
-    todo_id = str(uuid4())
-    lst['todos'].append({'id': todo_id, 'name': todo_name, 'completed': False})
+    g.storage.create_new_todo(list_id, todo_name)
     flash("The todo was added.", "success")
-    session.modified = True
-    return redirect(url_for('show_list', id=list_id))
+    return redirect(url_for('show_list', list_id=list_id))
 
-@app.route("/lists/<list_id>/todos/<id>/delete", methods=["POST"])
-def delete_todo(list_id, id):
-    lst = find_list_by_id(session['lists'], list_id)
+@app.route("/lists/<list_id>/todos/<todo_id>/delete", methods=["POST"])
+def delete_todo(list_id, todo_id):
+    lst = g.storage.find_list(list_id)
     if not lst:
-        raise ListNotFoundError(f"The specified list with id {id} was not found.")
+        raise ListNotFoundError(f"The specified todo with id {todo_id} was not found.")
     for idx, todo in enumerate(lst['todos']):
         if todo['id'] == id:
             del lst['todos'][idx]
@@ -132,34 +126,22 @@ def delete_todo(list_id, id):
         return jsonify(success=True)
     else:
         flash("The todo has been deleted.", "success")
-        return redirect(url_for('show_list', id=list_id))
+        return redirect(url_for('show_list', list_id=list_id))
 
-@app.route("/lists/<list_id>/todos/<id>", methods=["POST"])
-def update_todo_status(list_id, id):
-    lst = find_list_by_id(session['lists'], list_id)
-    if not lst:
-        raise ListNotFoundError(f"The specified list with id {id} was not found.")
+@app.route("/lists/<list_id>/todos/<todo_id>", methods=["POST"])
+def update_todo_status(list_id, todo_id):
     is_completed = request.form['completed'] == 'True'
-
-    todo = find_todo_by_id(lst['todos'], id)
-    todo['completed'] = is_completed
+    g.storage.update_todo_status(list_id, todo_id, is_completed)
 
     flash("The todo has been updated.", "success")
-    session.modified = True
-    return redirect(url_for('show_list', id=list_id))
+    return redirect(url_for('show_list', list_id=list_id))
 
-@app.route("/lists/<id>/complete_all", methods=["POST"])
-def mark_all_todos_completed(id):
-    lst = find_list_by_id(session['lists'], id)
-    if not lst:
-        raise ListNotFoundError(f"The specified list with id {id} was not found.")
-
-    for todo in lst['todos']:
-        todo['completed'] = True
+@app.route("/lists/<list_id>/complete_all", methods=["POST"])
+def mark_all_todos_completed(list_id):
+    g.storage.mark_all_todos_as_completed(list_id)
 
     flash("All todos have been updated.", "success")
-    session.modified = True
-    return redirect(url_for('show_list', id=id))
+    return redirect(url_for('show_list', list_id=list_id))
 
 if __name__ == "__main__":
     app.run(debug=True, port=5003)
